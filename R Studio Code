@@ -1,0 +1,277 @@
+# NSDUH 2019 – Kratom Analysis Script
+# Rogers et al. subset – Demographic Predictors & Co-use Patterns#
+
+
+# Clean workspace#
+
+rm(list = ls())
+
+# 1. Load packages that are needed
+
+library(dplyr)
+library(survey)
+library(ggplot2)
+library(broom)
+library(rpart)
+library(pROC)
+
+# 2. Load raw CSV
+nsduh2019 <- read.csv(
+  "C:/Users/Owner/Downloads/nsduh2019.csv",
+  header = FALSE,
+  stringsAsFactors = FALSE
+)
+
+# Check the structure
+dim(nsduh2019)
+head(nsduh2019, 3)
+
+# Remove rows that don't contain read data so only numeric-coded survey responses remain.
+nsduh2019 <- nsduh2019[-1, ]
+
+# 3. Rename V1–V42- change to meaningful variable names
+new_names <- c(
+  "id",                 # V1
+  "kratflg",            # V2
+  "kratyr",             # V3
+  "kratmon",            # V4
+  "analwt_c",           # V5 (analysis weight)
+  "vestr",              # V6 (strata)
+  "verep",              # V7 (PSU / replicate)
+  "age2",               # V8
+  "catage",             # V9
+  "irsex",              # V10
+  "eduhighcat",         # V11
+  "irwrkstat",          # V12
+  "poverty3",           # V13
+  "newrace2",           # V14
+  "pden10",             # V15
+  "coutyp4",            # V16
+  "oxycnnmyr",          # V17
+  "pnrnmlif",           # V18
+  "txevrrcvd2",         # V19
+  "depndpyill",         # V20
+  "udpyopi",            # V21
+  "income",             # V22
+  "herever",            # V23
+  "not_rx_opioids_life",# V24
+  "Rural",              # V25
+  "Rural2",             # V26
+  "Female",             # V27
+  "male",               # V28
+  "young_age",          # V29
+  "educated",           # V30
+  "employed",           # V31
+  "BPL",                # V32
+  "minority",           # V33
+  "Whity",              # V34
+  "sud",                # V35
+  "sud_treatment",      # V36
+  "HistRecoveryFactor", # V37
+  "past_year_depend",   # V38
+  "white",              # V39
+  "rural",              # V40
+  "RoganFactorMan",     # V41
+  "RoganFactorWoman"    # V42
+)
+
+stopifnot(length(new_names) == ncol(nsduh2019))
+colnames(nsduh2019) <- new_names
+
+# Quick check
+head(nsduh2019[, 1:10])
+
+# 4. Convert survey design fields to numeric
+nsduh2019 <- nsduh2019 %>%
+  mutate(
+    analwt_c = as.numeric(analwt_c),
+    vestr    = as.numeric(vestr),
+    verep    = as.numeric(verep)
+  )
+
+summary(nsduh2019$analwt_c)
+
+# 5. Create derived variables 
+nsduh2019 <- nsduh2019 %>%
+  mutate(
+    # Kratom indicators
+    kratom_ever_num  = ifelse(kratflg == 1, 1, 0),
+    kratom_year_num  = ifelse(kratyr  == 1, 1, 0),
+    kratom_month_num = ifelse(kratmon == 1, 1, 0),
+    
+    kratom_ever  = factor(kratom_ever_num,  levels = c(0, 1), labels = c("No", "Yes")),
+    kratom_year  = factor(kratom_year_num,  levels = c(0, 1), labels = c("No", "Yes")),
+    kratom_month = factor(kratom_month_num, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    # Demographics
+    age2   = as.numeric(age2),
+    catage = factor(catage),
+    irsex  = factor(irsex, levels = c(1, 2), labels = c("Male", "Female")),
+    
+    eduhighcat = factor(eduhighcat),
+    irwrkstat  = factor(irwrkstat),
+    poverty3   = factor(poverty3),
+    newrace2   = factor(newrace2),
+    pden10     = factor(pden10),
+    coutyp4    = factor(coutyp4),
+    income     = as.numeric(income),
+    
+    Rural  = factor(Rural),
+    Rural2 = factor(Rural2),
+    Female = factor(Female),
+    male   = factor(male),
+    young_age = factor(young_age),
+    educated  = factor(educated),
+    employed  = factor(employed),
+    BPL       = factor(BPL),
+    minority  = factor(minority),
+    Whity     = factor(Whity),
+    white     = factor(white),
+    rural     = factor(rural),
+    
+    # Substance use co-variables
+    oxycnnmyr = ifelse(oxycnnmyr == 1, 1, 0),
+    pnrnmlif  = ifelse(pnrnmlif  == 1, 1, 0),
+    txevrrcvd2 = ifelse(txevrrcvd2 == 1, 1, 0),
+    depndpyill = ifelse(depndpyill == 1, 1, 0),
+    udpyopi    = ifelse(udpyopi    == 1, 1, 0),
+    herever    = ifelse(herever    == 1, 1, 0),
+    not_rx_opioids_life = ifelse(not_rx_opioids_life == 1, 1, 0),
+    sud           = ifelse(sud == 1, 1, 0),
+    sud_treatment = ifelse(sud_treatment == 1, 1, 0),
+    past_year_depend = ifelse(past_year_depend == 1, 1, 0),
+    
+    HistRecoveryFactor = as.numeric(HistRecoveryFactor),
+    RoganFactorMan     = as.numeric(RoganFactorMan),
+    RoganFactorWoman   = as.numeric(RoganFactorWoman)
+  )
+
+# 6. Define survey design
+nsduh_design <- svydesign(
+  ids     = ~ verep,
+  strata  = ~ vestr,
+  weights = ~ analwt_c,
+  nest    = TRUE,
+  data    = nsduh2019
+)
+
+# 7. Weighted prevalence of kratom use
+
+# Overall weighted prevalence 
+svymean(~ kratom_ever_num, nsduh_design)
+
+# Weighted prevalence by sex
+prev_by_sex <- svyby(
+  ~ kratom_ever_num,
+  ~ irsex,
+  nsduh_design,
+  svymean,
+  vartype = c("se")
+) %>%
+  mutate(
+    lower = kratom_ever_num - 1.96 * se,
+    upper = kratom_ever_num + 1.96 * se
+  )
+
+prev_by_sex
+
+# Bar chart of kratom ever-use by sex (with 95% CI)
+ggplot(prev_by_sex, aes(x = irsex, y = kratom_ever_num)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  labs(
+    x = "Sex",
+    y = "Weighted prevalence of ever using kratom",
+    title = "Weighted Prevalence of Ever Using Kratom by Sex, NSDUH 2019"
+  )
+
+# Weighted prevalence by race/ethnicity
+prev_by_race <- svyby(
+  ~ kratom_ever_num,
+  ~ newrace2,
+  nsduh_design,
+  svymean,
+  vartype = c("se")
+)
+
+prev_by_race
+
+# 8. Crosstab: Kratom and opioid use disorder
+svytable(~ kratom_ever_num + udpyopi, nsduh_design)
+
+# 9. Main logistic regression (demography + co-use)
+kratom_model <- svyglm(
+  kratom_ever_num ~ age2 + irsex + income + sud + udpyopi + herever,
+  design = nsduh_design,
+  family = quasibinomial()
+)
+
+summary(kratom_model)
+
+# Odds ratios and 95% CI
+exp(coef(kratom_model))
+exp(confint(kratom_model))
+
+# results table for Capstone 
+results_table <- tidy(kratom_model) %>%
+  mutate(
+    OR     = exp(estimate),
+    CI_low = exp(estimate - 1.96 * std.error),
+    CI_high= exp(estimate + 1.96 * std.error)
+  ) %>%
+  select(term, estimate, std.error, OR, CI_low, CI_high, p.value)
+
+results_table
+
+# 10. Expanded logistic regression model
+full_model <- svyglm(
+  kratom_ever_num ~ age2 + irsex + income + eduhighcat + irwrkstat +
+    poverty3 + newrace2 + rural + sud + udpyopi + herever + pnrnmlif,
+  design = nsduh_design,
+  family = quasibinomial()
+)
+
+summary(full_model)
+
+# tidy full model results
+full_results <- tidy(full_model) %>%
+  mutate(
+    OR     = exp(estimate),
+    CI_low = exp(estimate - 1.96 * std.error),
+    CI_high= exp(estimate + 1.96 * std.error)
+  )
+
+head(full_results)
+
+# 11. Classification tree (unweighted)
+tree_model <- rpart(
+  kratom_ever_num ~ age2 + irsex + sud + udpyopi + herever + income,
+  data = nsduh2019
+)
+
+plot(tree_model)
+text(tree_model, use.n = TRUE, cex = 0.7)
+
+# 12. ROC curve and AUC
+roc_obj <- roc(
+  nsduh2019$kratom_ever_num,
+  fitted(kratom_model)
+)
+
+auc(roc_obj)   # AUC value 
+
+plot(roc_obj,
+     main = "ROC Curve for Kratom Use Model (NSDUH 2019)")
+
+# 13. Descriptive stats for key predictors
+svymean(~ age2 + employed + BPL + sud + udpyopi, nsduh_design)
+
+# 14. PCA on recovery-related factors
+pca <- prcomp(
+  nsduh2019[, c("RoganFactorMan", "RoganFactorWoman", "HistRecoveryFactor")],
+  scale = TRUE
+)
+
+summary(pca)
+pca$rotation  # loadings
+
